@@ -9,18 +9,18 @@ This constitution governs how its code is structured, tested, and maintained.
 
 The codebase is organized by product feature, not by technical layer.
 
-- Every feature lives in `lib/src/<feature>/` and owns its models, ports, use cases, state,
-  adapters, pages, and widgets. A feature includes only the subfolders it needs.
-- The canonical feature layout is:
+- Every feature lives in `lib/src/<feature>/` and owns its models, repositories, data
+  providers, state, pages, and widgets. A feature includes only the subfolders it needs.
+- The canonical feature layout follows the Arka Flutter project structure:
 
   ```text
   lib/src/<feature>/
   ├── <feature>.dart      # Root barrel: the feature's only public surface
-  ├── models/             # Entities, value objects, sealed results (pure Dart)
-  ├── ports/              # abstract interface classes the feature depends on (pure Dart)
-  ├── use_cases/          # Optional orchestration across ports (pure Dart)
+  ├── models/             # Immutable Equatable models and sealed results (pure Dart)
+  ├── repositories/       # Repository interfaces and their implementations
+  ├── providers/          # Data provider interfaces and their implementations
+  ├── use_cases/          # Optional: only for orchestration across repositories
   ├── state/              # Cubits/Blocs and their states
-  ├── adapters/           # Implementations of ports (file system, parser, platform)
   ├── pages/              # Routed screens
   └── widgets/            # Feature-local widgets
   ```
@@ -28,8 +28,9 @@ The codebase is organized by product feature, not by technical layer.
 - `lib/src/app/` contains only bootstrapping and wiring: the composition root (`AppState`),
   the router, localization, and the root widget. It MUST NOT hold business logic.
 - `lib/src/core/` holds only code that two or more features genuinely share (app-wide
-  widgets, shared state, shared models, and validation). Code moves into `core/` when a
-  second feature needs it, not before.
+  widgets, shared state, shared models, validation, and shared data providers in
+  `core/providers/`, such as the file system or preferences storage). Code moves into
+  `core/` when a second feature needs it, not before.
 - Each subfolder exposes a barrel file. Only symbols used outside that folder are exported.
 - Inside a feature, imports are relative. Across features, imports MUST go through the target
   feature's root barrel (`package:simple_mark/src/<feature>/<feature>.dart`). Importing an
@@ -41,33 +42,60 @@ The codebase is organized by product feature, not by technical layer.
 **Rationale**: a feature-first layout keeps a change inside one folder, keeps agent and human
 context small, and makes deleting a feature a single-directory operation.
 
-### II. Ports and Adapters Behind the Clean Dependency Rule
+### II. Layered Data Flow with Ports and Adapters
 
-Dependencies point inward. Business rules never depend on frameworks, I/O, or UI.
+Data flows through one chain, and every boundary in that chain is an interface:
 
-- **Layers per feature** (inner → outer): `models` → `ports` → `use_cases` → `state` →
-  `adapters` / `pages` / `widgets`.
-- `models/`, `ports/`, and `use_cases/` MUST be pure Dart. They MUST NOT import
-  `package:flutter/*`, `dart:io`, `dart:ui`, platform plugins, or any adapter.
-- Every interaction with the outside world (file system, Markdown parsing engine, clipboard,
-  window and platform channels, persistence, network) MUST be reached through a port declared
-  as an `abstract interface class` in `ports/`. The concrete class lives in `adapters/`.
-- Cubits/Blocs and use cases depend on ports only, never on adapter classes.
-- Adapters translate external types into feature models at the boundary. Third-party types
-  (for example a parser's AST nodes or a plugin's result objects) MUST NOT leak past an
-  adapter.
-- Wiring is done only in the composition root (`lib/src/app/app_state.dart`) through
-  constructor injection and `RepositoryProvider` / `BlocProvider`. Service locators and
-  global singletons are forbidden.
-- A use case class is created only when logic spans more than one port or is reused by more
-  than one Cubit/Bloc. Otherwise the Cubit/Bloc calls the port directly. Pass-through use
-  cases are forbidden.
-- Data crosses layers as immutable models. Function inputs at port boundaries are validated,
-  and repeated validation lives in shared validators in `core/`.
+```text
+Page/Widget ──▶ Cubit/Bloc ──▶ Repository ──▶ Data provider ──▶ OS, disk, plugin
+     ▲  state       │  models       │  raw data      │
+     └──────────────┴───────────────┴────────────────┘  results return up the chain
+```
 
-**Rationale**: ports keep the domain testable without Flutter. They also let an engine such as
-the Markdown parser or the storage backend be replaced without touching business rules. The
-use-case rule keeps the benefits of Clean Architecture without per-call ceremony.
+- **Data providers** give raw access to exactly one external system: the file system,
+  macOS security-scoped bookmarks, preferences storage, file watching, the clipboard, or a
+  platform channel. They return raw data (bytes, strings, paths, maps, or provider records
+  defined in `providers/`) and MUST NOT contain business rules.
+- **Repositories** are the single source of truth for one domain area. They combine data
+  providers, apply the business rules (for example scan depth, exclusions, frontmatter
+  parsing, or stale-state cleanup), and return feature models only. Provider types MUST NOT
+  leak past a repository.
+- **Cubits/Blocs** depend only on repository interfaces (or a use case), turn models into
+  state, and perform no I/O.
+- **Pages and widgets** read state and call Cubit/Bloc methods. They never call repositories
+  or providers directly.
+- **Ports and adapters apply at both boundaries.** Each repository and each data provider is
+  declared as an `abstract interface class` (the port), with its implementation (the
+  adapter) next to it in the same folder:
+  - Cubit → Repository: `DocumentRepository` is implemented by `LocalDocumentRepository`.
+  - Repository → Data provider: `FileSystemProvider` is implemented by
+    `IoFileSystemProvider`, and `BookmarkProvider` by `MacosBookmarkProvider`.
+
+  Interface files are named after the interface (`document_repository.dart`), and
+  implementation files carry their qualifier (`local_document_repository.dart`,
+  `macos_bookmark_provider.dart`).
+- **Dependency rule**: each layer depends only on the interfaces of the layer directly below
+  it. Cubits never use providers. Repositories never use other repositories. Nothing depends
+  on an implementation class except the composition root.
+- **Purity**: `models/`, repository interfaces and implementations, and `use_cases/` MUST be
+  pure Dart. They MUST NOT import `package:flutter/*`, `dart:io`, `dart:ui`, platform plugins,
+  or platform channels. Only data provider implementations may touch them. Repositories may
+  use pure-Dart computation libraries (for example Markdown or YAML parsers) as long as those
+  libraries' types do not leave the repository.
+- **Use cases** exist only when one Cubit/Bloc has to coordinate more than one repository.
+  A use case that only passes a single call through is forbidden.
+- **Wiring** is done only in the composition root (`lib/src/app/app_state.dart`) through
+  constructor injection, `RepositoryProvider`, and `BlocProvider`. Service locators and
+  global singletons are forbidden. The word "provider" in `RepositoryProvider` and
+  `BlocProvider` means dependency injection, while a *data provider* is a layer of the chain.
+- **Boundaries carry models**: data crosses layers as immutable values. Inputs at repository
+  and provider boundaries are validated, and repeated validation lives in shared validators
+  in `core/`.
+
+**Rationale**: this is the Arka and bloc-library standard, so every Arka Flutter app reads the
+same way. Interfaces at both boundaries make each layer testable with fakes of the layer below.
+Putting all platform code in data provider implementations means Windows and Linux support
+(see Target platforms) adds providers without touching repositories, state, or UI.
 
 ### III. Predictable State with flutter_bloc
 
@@ -80,7 +108,8 @@ All application and feature state is managed with `flutter_bloc`.
   hierarchy or an explicit status enum. Mutable fields, `late` fields, and nullable flags
   that encode status are forbidden.
 - Cubits/Blocs contain presentation logic only. They MUST NOT import widgets, a
-  `BuildContext`, or adapters, and they MUST NOT perform I/O except through ports.
+  `BuildContext`, repository implementations, or data providers, and they MUST NOT perform
+  I/O except through repository interfaces.
 - Widgets rebuild only for the fields they read. Use `BlocSelector`, `context.select`,
   `buildWhen`, and `listenWhen` with named predicate functions, and use per-item selectors
   in lists. Watching a whole state for one field is forbidden.
@@ -100,14 +129,23 @@ rebuilds and tests deterministic. Narrow selectors keep large Markdown documents
 
 Tests define behavior before code exists, and each layer is tested at its own boundary.
 
-- **Red-Green-Refactor**: for models, use cases, and Cubits/Blocs, a failing test MUST be
-  written and observed to fail before the implementation is written.
+- **Red-Green-Refactor**: for models, repository implementations, use cases, and
+  Cubits/Blocs, a failing test MUST be written and observed to fail before the implementation
+  is written.
 - **Every bug fix** starts with a regression test that reproduces the defect.
-- **Unit tests** cover all models, validators, use cases, and Cubits/Blocs (with `bloc_test`).
-  Ports are replaced by in-memory fakes in `test/.../fakes/`, or by `mocktail` mocks when
-  verifying an interaction is the point of the test.
-- **Port contract tests**: every port has one shared contract test suite that runs against
-  every adapter and against the fake, so the fake cannot drift from real behavior.
+- **Unit tests** follow the chain, and each layer is tested against fakes of the layer below:
+  - Cubits/Blocs (with `bloc_test`) against fake repositories
+  - use cases against fake repositories
+  - repository implementations against fake data providers
+  - models and validators directly
+
+  Fakes are in-memory implementations of the interfaces in `test/.../fakes/`. `mocktail` mocks
+  are used only when verifying an interaction is the point of the test.
+- **Data provider tests**: every data provider implementation has integration tests against
+  the real system it wraps (for example a temporary directory on disk).
+- **Contract tests**: every repository and data provider interface has one shared contract
+  suite that runs against every implementation and against its fake, so fakes cannot drift
+  from real behavior.
 - **Widget tests** cover every page and every widget with conditional rendering or user
   interaction, including empty, loading, error, and large-document states.
 - **Golden tests** cover Markdown rendering output for a maintained corpus of fixture
@@ -115,15 +153,16 @@ Tests define behavior before code exists, and each layer is tested at its own bo
   links, images, front matter, and malformed input).
 - **Integration tests** (`integration_test/`) cover each user journey in the spec on at
   least one supported platform.
-- **Coverage**: `models/`, `ports/`, `use_cases/`, and `state/` MUST reach at least 90% line
-  coverage. The whole of `lib/` MUST reach at least 80%. Generated code is excluded
-  consistently. Thresholds are never lowered to pass a gate.
+- **Coverage**: `models/`, `repositories/`, `use_cases/`, and `state/` MUST reach at least 90%
+  line coverage. The whole of `lib/`, including `providers/`, MUST reach at least 80%.
+  Generated code is excluded consistently. Thresholds are never lowered to pass a gate.
 - Tests use `package:flutter_test/flutter_test.dart`, run in randomized order, and record
   the seed. A flaky test is a defect and is fixed, not retried or skipped.
 - Interactive controls carry stable `ValueKey<String>` keys so tests and runtime
   verification never depend on display text.
 
-**Rationale**: the pure-Dart inner layers make test-first cheap. Contract tests make fakes
+**Rationale**: pure-Dart repositories and state make test-first cheap, and testing each layer
+against fakes of the layer below keeps failures local. Contract tests make fakes
 trustworthy. Golden tests catch rendering regressions that unit tests cannot see.
 
 ### V. DRY With Deliberate Abstraction
@@ -138,9 +177,10 @@ removed, and coincidental similarity is not.
   occurrence.
 - Shared code goes to the narrowest owner: the same feature first, then `core/`, then a
   separate package only when another repository needs it.
-- An abstraction MUST have a current second consumer or a port boundary that justifies it.
-  Speculative generality (interfaces with one implementation and no boundary, configuration
-  for unrequested variants) is forbidden.
+- An abstraction MUST have a current second consumer or one of the two interface boundaries
+  of Principle II that justifies it. Speculative generality (interfaces outside those
+  boundaries with a single implementation, configuration for unrequested variants) is
+  forbidden.
 - UI is composed from ForUI primitives and theme values. App layout constants are centralized
   in `core/`. Magic numbers and hard-coded colors in widgets are forbidden.
 - Test setup is shared through builders and fixtures, never copied between test files.
@@ -160,11 +200,15 @@ Static analysis and gates report evidence. They are never weakened to produce a 
   false positive, on the narrowest line, with a written reason, and they are reported in
   the handoff.
 - Never add fallbacks, silent defaults, swallowed exceptions, or retries that hide failures.
-  Errors are modeled as typed results or typed exceptions at port boundaries and logged
-  where they happen, with the underlying cause.
-- A boundary check (script or `import_lint`-style rule) MUST fail the gate when an inner
-  layer imports Flutter, `dart:io`, or an adapter, or when a feature imports another
-  feature's internal files.
+  Errors are modeled as typed results or typed exceptions at repository and data provider
+  boundaries and logged where they happen, with the underlying cause.
+- A boundary check (script or `import_lint`-style rule) MUST fail the gate when:
+  - code outside data provider implementations imports `dart:io`, a platform plugin, or a
+    platform channel
+  - `models/`, `repositories/`, or `use_cases/` imports Flutter
+  - a Cubit/Bloc, page, or widget imports a data provider or a repository implementation
+  - a repository imports another repository
+  - a feature imports another feature's internal files
 
 **Rationale**: a gate that can be bent stops being evidence. Typed errors keep failure paths
 as testable as success paths.
@@ -202,8 +246,9 @@ features be replaced instead of patched.
 - **Target platforms**: macOS first. A feature is complete when it works on macOS. Windows 11
   and Linux follow as separate features (`BL-001` and `BL-002` in `specs/backlog.md`) and are
   not in scope for a macOS feature unless that feature's spec says so. Platform-specific
-  code stays behind ports (Principle II), so adding a platform means adding adapters, not
-  changing inner layers. Supported platforms are listed in `README.md`.
+  code lives only in data provider implementations (Principle II), so adding a platform
+  means adding providers, not changing repositories, state, or UI. Supported platforms are
+  listed in `README.md`.
 - **Untrusted content**: every Markdown document is treated as untrusted input. Raw HTML is
   not executed. Links open only after an explicit user action and only for allow-listed
   schemes (`http`, `https`, `mailto`, and relative file links). Remote images are not
@@ -213,7 +258,9 @@ features be replaced instead of patched.
   without a spec that states its purpose and legal basis under the GDPR (General Data
   Protection Regulation), in line with ArkaLogic's sovereign European tech stance.
 - **Dependencies**: each new package needs a stated reason in the plan, an active maintainer,
-  and a compatible license. It is wrapped behind a port when it touches I/O or parsing.
+  and a compatible license. A package that touches I/O or the platform is used only inside a
+  data provider implementation. A pure-Dart computation package is used only inside a
+  repository, and its types do not leave the repository.
 - **Scripts**: repository automation is Bash (`.sh`) or Dart. Python scripts are not stored.
 
 ## Development Workflow & Quality Gates
@@ -223,7 +270,7 @@ features be replaced instead of patched.
   MUST list every principle and either confirm compliance or record a justified exception
   in its Complexity Tracking table.
 - **Task ordering**: generated tasks put test tasks before implementation tasks for models,
-  use cases, and state (Principle IV).
+  repositories, use cases, and state (Principle IV).
 - **Backlog**: `specs/backlog.md` is the only place for deferred work:
   - every entry has a stable `BL-NNN` ID, its origin, the reason it was deferred, and its known
     gaps or scope
@@ -258,8 +305,7 @@ features be replaced instead of patched.
 - This constitution supersedes other practices for this repository. The Arka Knowledge Base
   rules (Flutter coding rules, software quality rules, project structure) apply wherever
   they do not conflict with this document. Where they conflict, this document wins and the
-  conflict is recorded for a KB update. The known conflict is Principle I splitting the KB's
-  `repositories/` folder into `ports/` and `adapters/`.
+  conflict is recorded for a KB update.
 - **Amendments** are made through `/speckit-constitution` in a dedicated commit. The commit
   states the version change and the reason, and a migration note when existing code becomes
   non-compliant. Andre approves every amendment.
@@ -273,4 +319,4 @@ features be replaced instead of patched.
 - Runtime development guidance for agents lives in `AGENTS.md` (TODO(AGENTS_MD): create it),
   which MUST NOT contradict this constitution.
 
-**Version**: 1.1.0 | **Ratified**: 2026-11-24 | **Last Amended**: 2026-11-27
+**Version**: 2.0.0 | **Ratified**: 2026-11-24 | **Last Amended**: 2026-11-27
