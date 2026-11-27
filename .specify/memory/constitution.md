@@ -199,7 +199,11 @@ features be replaced instead of patched.
 - **UI components**: ForUI for primitives and theming.
 - **Testing**: `flutter_test`, `bloc_test`, `mocktail`, golden tests, and
   `integration_test`.
-- **Target platforms**: TODO(TARGET_PLATFORMS) — to be decided and recorded in `README.md`.
+- **Target platforms**: macOS first. A feature is complete when it works on macOS. Windows 11
+  and Linux follow as separate features (`BL-001` and `BL-002` in `specs/backlog.md`) and are
+  not in scope for a macOS feature unless that feature's spec says so. Platform-specific
+  code stays behind ports (Principle II), so adding a platform means adding adapters, not
+  changing inner layers. Supported platforms are listed in `README.md`.
 - **Untrusted content**: every Markdown document is treated as untrusted input. Raw HTML is
   not executed. Links open only after an explicit user action and only for allow-listed
   schemes (`http`, `https`, `mailto`, and relative file links). Remote images are not
@@ -220,6 +224,15 @@ features be replaced instead of patched.
   in its Complexity Tracking table.
 - **Task ordering**: generated tasks put test tasks before implementation tasks for models,
   use cases, and state (Principle IV).
+- **Backlog**: `specs/backlog.md` is the only place for deferred work:
+  - every entry has a stable `BL-NNN` ID, its origin, the reason it was deferred, and its known
+    gaps or scope
+  - work found during `/speckit-specify`, `/speckit-clarify`, `/speckit-plan`,
+    `/speckit-implement`, or testing that is outside the current feature's scope is added as
+    an entry and not added to the current spec
+  - an entry becomes a feature only through `/speckit-specify`, and the entry is then marked
+    `Promoted → specs/NNN-<name>`, not deleted
+  - IDs are never reused or renumbered
 - **Local gate**: the repository exposes `make quality-gate`, which runs in order:
   1. `fvm dart format --output=none --set-exit-if-changed lib test`
   2. `fvm flutter analyze --fatal-infos`
@@ -260,4 +273,4 @@ features be replaced instead of patched.
 - Runtime development guidance for agents lives in `AGENTS.md` (TODO(AGENTS_MD): create it),
   which MUST NOT contradict this constitution.
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-24 | **Last Amended**: 2026-11-24
+**Version**: 1.1.0 | **Ratified**: 2026-11-24 | **Last Amended**: 2026-11-27
